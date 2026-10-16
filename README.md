@@ -33,6 +33,11 @@ Routing rules you can verify straight away:
 
 Nothing else is required.
 
+Node.js 18 reached end-of-life on 2025-04-30 and no longer receives security patches. The
+declared floor stays at 18.0.0 and the server runs unchanged on maintained releases, so
+this is a minimum rather than a recommendation. For anything other than a local,
+short-lived run, use a maintained release — Node.js 22.x LTS is the safe choice.
+
 ## Installation
 
 None. The project declares no dependency, so there is no `npm install` step and no
@@ -61,7 +66,9 @@ Server listening on port 3000
 
 It then stays in the foreground serving requests until you stop it. It binds no specific
 host, so it listens on all interfaces: `localhost` works from the same machine, and a
-container port mapping or a forwarded port reaches it too.
+container port mapping or a forwarded port reaches it too. It has no authentication, no
+authorisation and no access control, so anyone who can reach the port can use it; run it
+on a trusted, local network.
 
 ## Verifying it works
 
