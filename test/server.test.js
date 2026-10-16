@@ -82,8 +82,8 @@ function allocateFreePort() {
  * @param {Record<string, string>} env Environment overrides for the child; the
  *   rest of the environment is inherited, so the only difference from the parent
  *   is what the caller sets.
- * @returns {Promise<{ child: import('node:child_process').ChildProcess, port: number,
- *   stdout: { text: string }, stderr: { text: string } }>} The running server.
+ * @returns {Promise<{ child: ChildProcess, port: number, stdout: { text: string },
+ *   stderr: { text: string } }>} The running server.
  */
 async function startServer(env) {
   const child = spawn(process.execPath, [APPLICATION_PATH], {
@@ -194,7 +194,7 @@ function request(port, requestPath, method) {
  * test may stop the server in its own body and call this again from a finally
  * block. Leaving a child running would keep its pipes open and hang the run.
  *
- * @param {import('node:child_process').ChildProcess} child The child process.
+ * @param {ChildProcess} child The child process.
  * @returns {Promise<{ code: number|null, signal: string|null }>} The exit result.
  */
 async function stopServer(child) {
