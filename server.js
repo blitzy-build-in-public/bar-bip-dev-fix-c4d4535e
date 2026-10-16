@@ -41,6 +41,10 @@ function parsePort(rawValue) {
 /**
  * Derive the request path used for both logging and route matching.
  *
+ * The log line and the route lookup both speak of the request path with no
+ * query string, so the split here feeds one value to both: logging the raw
+ * target would add a query to a log line, and '/hello?x=1' would miss '/hello'.
+ *
  * @param {string} requestUrl The request target, possibly carrying a query string.
  * @returns {string} The target up to the first '?', so '/hello?x=1' yields '/hello'.
  */

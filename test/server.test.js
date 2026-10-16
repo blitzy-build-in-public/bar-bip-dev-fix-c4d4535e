@@ -3,11 +3,12 @@
 /*
  * test/server.test.js — the product's entire verification harness.
  *
- * Re-runs the plan's acceptance gates against server.js, driven as a child
- * process so every assertion observes the server's real stdout, stderr, HTTP
- * wire output and exit status. The harness uses only Node.js built-in modules
- * and depends on no package, so `npm test` passes on a clean checkout with
- * nothing installed.
+ * Re-runs the project's acceptance gates — the endpoint, configuration and
+ * lifecycle contracts plus the concurrency and latency checks — against
+ * server.js, driven as a child process so every assertion observes the
+ * server's real stdout, stderr, HTTP wire output and exit status. The harness
+ * uses only Node.js built-in modules and depends on no package, so `npm test`
+ * passes on a clean checkout with nothing installed.
  *
  * The harness floor is Node 18.1.0, the release that introduced `node --test`;
  * it declares tests with `test(name, fn)` alone, so it depends on neither
@@ -43,8 +44,8 @@ const REQUEST_LINE_PATTERN = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] (
 const GET_HELLO_LINE_PATTERN = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] GET \/hello$/m;
 const POST_HELLO_LINE_PATTERN = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] POST \/hello$/m;
 
-// Every wait in this file takes its budget from one of these, so no test can
-// wait without a bound.
+// Every timeout in this file comes from one of these constants, so a wait's
+// budget is declared here rather than invented at its point of use.
 const STARTUP_TIMEOUT_MS = 5000;
 const EXIT_TIMEOUT_MS = 2000;
 const OUTPUT_TIMEOUT_MS = 1000;
@@ -81,15 +82,24 @@ function allocateFreePort() {
 /**
  * Launch server.js as a child process and resolve once it reports a bound port.
  *
- * @param {Record<string, string>} env Environment overrides for the child; the
- *   rest of the environment is inherited, so the only difference from the parent
- *   is what the caller sets.
- * @returns {Promise<{ child: ChildProcess, port: number, stdout: { text: string },
- *   stderr: { text: string } }>} The running server.
+ * @param {Record<string, string>} env Environment overrides for the child: the
+ *   rest of the environment is inherited but `PORT` is not, so a call that sets
+ *   it sets the child's value and one that omits it leaves the child's unset.
+ * @returns {Promise<{ child: import('node:child_process').ChildProcess, port: number,
+ *   stdout: { text: string }, stderr: { text: string } }>} The running server.
  */
 async function startServer(env) {
+  // The caller's env decides PORT alone: the ambient value is dropped unless the
+  // env argument carries the key, so a call that omits it starts a child with no
+  // PORT rather than one bound to the runner's own port.
+  const childEnv = { ...process.env, ...env };
+
+  if (!Object.prototype.hasOwnProperty.call(env, 'PORT')) {
+    delete childEnv.PORT;
+  }
+
   const child = spawn(process.execPath, [APPLICATION_PATH], {
-    env: { ...process.env, ...env },
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -207,7 +217,7 @@ function request(port, requestPath, method) {
  * test may stop the server in its own body and call this again from a finally
  * block. Leaving a child running would keep its pipes open and hang the run.
  *
- * @param {ChildProcess} child The child process.
+ * @param {import('node:child_process').ChildProcess} child The child process.
  * @returns {Promise<{ code: number|null, signal: string|null }>} The exit result.
  */
 async function stopServer(child) {
@@ -257,8 +267,8 @@ async function stopServer(child) {
  *
  * The server writes each line before it acts on the request, so the only latency
  * absorbed here is pipe delivery: a line already written may reach the
- * accumulator a few milliseconds later. The budget is always explicit, so a
- * missing line fails its test rather than hanging it.
+ * accumulator a few milliseconds later. The budget is a required argument, so
+ * a missing line fails its test rather than hanging it.
  *
  * @param {{ stdout: { text: string }, stderr: { text: string } }} handle The handle startServer resolved with.
  * @param {'stdout'|'stderr'} streamName Which accumulator to poll.
@@ -497,7 +507,6 @@ test('T6 the startup line names the port the server bound', async () => {
   }
 });
 
-
 test('T7 SIGINT logs the shutdown line and exits with status 0', async () => {
   const port = await allocateFreePort();
   const handle = await startServer({ PORT: String(port) });
@@ -530,14 +539,12 @@ test('T8 a PORT that is unset or empty binds the default port 3000', async () =>
   // fails legitimately when an unrelated process already holds port 3000, which
   // is a host condition rather than a product defect. An empty string is the
   // second spelling of "no value given", so both spellings are asserted, each
-  // child stopped before the next is spawned.
-  const withoutPort = { ...process.env };
-
-  delete withoutPort.PORT;
-
+  // child stopped before the next is spawned. startServer takes PORT from the
+  // env argument alone, so omitting the key is what leaves the child's PORT
+  // unset, whatever the runner's own environment holds.
   const noValueCases = [
-    { spelling: 'an unset PORT', env: withoutPort },
-    { spelling: 'an empty PORT', env: { ...process.env, PORT: '' } },
+    { spelling: 'an unset PORT', env: {} },
+    { spelling: 'an empty PORT', env: { PORT: '' } },
   ];
 
   for (const noValueCase of noValueCases) {
