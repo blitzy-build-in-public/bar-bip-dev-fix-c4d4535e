@@ -130,52 +130,6 @@ function requestHandler(req, res) {
 }
 
 /**
- * Report a bind failure on stderr and exit with status 1.
- *
- * @param {Error & { code?: string }} err The error emitted by the server.
- * @param {number} port The port the server failed to bind.
- */
-function handleServerError(err, port) {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`Error: Port ${port} is already in use. Stop the process using it or set PORT to a free port.`);
-  } else {
-    console.error(
-      `Error: Server could not start on port ${port}: ${err.code || err.message}. ` +
-        `Confirm the port is within ${PORT_MIN}-${PORT_MAX} and is not reserved by another process.`
-    );
-  }
-
-  process.exit(1);
-}
-
-/**
- * Shut the server down on SIGINT: report it, stop accepting connections, close
- * them, and exit with status 0.
- *
- * @param {http.Server} server The running server.
- */
-function shutdown(server) {
-  console.log('Server shutting down');
-
-  server.close(() => {
-    process.exit(0);
-  });
-
-  // closeIdleConnections() arrived in Node 18.2.0 while the supported floor is
-  // 18.0.0, so it is called only when the runtime provides it: on Node 18
-  // close() leaves idle keep-alive sockets open, a behaviour changed in v19.0.0.
-  if (typeof server.closeIdleConnections === 'function') {
-    server.closeIdleConnections();
-  }
-
-  // Force the promised status 0 if a lingering socket holds the event loop past
-  // the close callback; the timer is unref'd so it cannot itself delay the exit.
-  setTimeout(() => {
-    process.exit(0);
-  }, 1000).unref();
-}
-
-/**
  * Validate the configuration, create the server and start listening.
  */
 function start() {
@@ -203,6 +157,63 @@ function start() {
   server.listen(port, () => {
     console.log(`Server listening on port ${port}`);
   });
+}
+
+/**
+ * Report a bind failure on stderr and exit with status 1.
+ *
+ * @param {Error & { code?: string }} err The error emitted by the server.
+ * @param {number} port The port the server failed to bind.
+ */
+function handleServerError(err, port) {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Error: Port ${port} is already in use. Stop the process using it or set PORT to a free port.`);
+  } else {
+    console.error(
+      `Error: Server could not start on port ${port}: ${err.code || err.message}. ` +
+        `Confirm the port is within ${PORT_MIN}-${PORT_MAX} and is not reserved by another process.`
+    );
+  }
+
+  process.exit(1);
+}
+
+// Set by the first shutdown, so a second SIGINT delivered while close() is still
+// waiting on an in-flight connection cannot repeat the shutdown line or re-arm
+// the close timer.
+let isShuttingDown = false;
+
+/**
+ * Shut the server down on SIGINT: report it, stop accepting connections, close
+ * them, and exit with status 0.
+ *
+ * @param {http.Server} server The running server.
+ */
+function shutdown(server) {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+
+  console.log('Server shutting down');
+
+  server.close(() => {
+    process.exit(0);
+  });
+
+  // closeIdleConnections() arrived in Node 18.2.0 while the supported floor is
+  // 18.0.0, so it is called only when the runtime provides it: on Node 18
+  // close() leaves idle keep-alive sockets open, a behaviour changed in v19.0.0.
+  if (typeof server.closeIdleConnections === 'function') {
+    server.closeIdleConnections();
+  }
+
+  // Force the promised status 0 if a lingering socket holds the event loop past
+  // the close callback; the timer is unref'd so it cannot itself delay the exit.
+  setTimeout(() => {
+    process.exit(0);
+  }, 1000).unref();
 }
 
 start();
