@@ -48,6 +48,8 @@ const POST_HELLO_LINE_PATTERN = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\
 const STARTUP_TIMEOUT_MS = 5000;
 const EXIT_TIMEOUT_MS = 2000;
 const OUTPUT_TIMEOUT_MS = 1000;
+const REQUEST_TIMEOUT_MS = 2000;
+const CONNECT_TIMEOUT_MS = 1000;
 const POLL_INTERVAL_MS = 15;
 
 /**
@@ -114,7 +116,9 @@ async function startServer(env) {
     });
   });
 
-  const port = env.PORT === undefined ? DEFAULT_PORT : Number(env.PORT);
+  // The server treats an unset PORT and an empty-string PORT as the same case
+  // and both take the default, so Number('') must not be read as port 0 here.
+  const port = env.PORT === undefined || env.PORT === '' ? DEFAULT_PORT : Number(env.PORT);
   const handle = { child, port, stdout, stderr };
   const startupMarker = STARTUP_PREFIX + port;
 
@@ -183,6 +187,15 @@ function request(port, requestPath, method) {
     );
 
     clientRequest.on('error', reject);
+
+    // A server that accepted the connection but never ended its response would
+    // otherwise leave this promise unsettled and hang the run instead of failing
+    // its test. Destroying the request surfaces as an 'error' event, so the
+    // rejection carries a real message rather than an idle socket.
+    clientRequest.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      clientRequest.destroy(new Error(`no response within ${REQUEST_TIMEOUT_MS} ms`));
+    });
+
     clientRequest.end();
   });
 }
@@ -272,7 +285,9 @@ function waitForLine(handle, streamName, pattern, timeoutMs) {
         return;
       }
 
-      setTimeout(poll, POLL_INTERVAL_MS);
+      // Unref'd like stopServer's budget timer, so a wait whose race is lost to
+      // the child's exit cannot hold the runner open until the budget expires.
+      setTimeout(poll, POLL_INTERVAL_MS).unref();
     };
 
     poll();
@@ -389,7 +404,7 @@ test('T4 a query string is stripped before both matching and logging', async () 
   }
 });
 
-test('T5 every request logs one line before route handling, in request order', async () => {
+test('T5 every request logs one line in the fixed format, in request order', async () => {
   const port = await allocateFreePort();
   const handle = await startServer({ PORT: String(port) });
   const { child, stdout } = handle;
@@ -397,9 +412,11 @@ test('T5 every request logs one line before route handling, in request order', a
   try {
     await request(port, HELLO_PATH);
 
-    // The line is written before the route table is consulted, so the response
-    // cannot have been produced before it. The poll below absorbs only pipe
-    // delivery latency: the assertion runs once the line has arrived.
+    // server.js writes the line from its handler before it looks the route up,
+    // but a black-box harness cannot discriminate that order: the log line and
+    // the response are both complete before this test observes either. What the
+    // assertions below prove is the count, the format and the request order of
+    // the lines; the poll absorbs only pipe delivery latency.
     const getLine = await waitForLine(handle, 'stdout', GET_HELLO_LINE_PATTERN, OUTPUT_TIMEOUT_MS);
 
     assert.notStrictEqual(getLine, null, 'GET /hello must log one line');
@@ -425,7 +442,38 @@ test('T5 every request logs one line before route handling, in request order', a
 });
 
 test('T6 the startup line names the port the server bound', async () => {
+  // A bounded TCP reachability probe for the default port: true iff something
+  // accepts a connection there. It settles once, on connect, on error or on the
+  // socket timeout.
+  const probeDefaultPort = () =>
+    new Promise((resolve) => {
+      const socket = net.connect({ host: '127.0.0.1', port: DEFAULT_PORT });
+
+      const settle = (reachable) => {
+        socket.destroy();
+        resolve(reachable);
+      };
+
+      socket.setTimeout(CONNECT_TIMEOUT_MS, () => {
+        settle(false);
+      });
+      socket.once('connect', () => {
+        settle(true);
+      });
+      socket.once('error', () => {
+        settle(false);
+      });
+    });
+
   const port = await allocateFreePort();
+
+  // The default port is probed before the spawn and again once the server has
+  // reported the port it bound, so a server given a port that also listened on
+  // 3000 fails the assertion below. A host where 3000 is already held cannot
+  // fail this test by itself, and the clause keeps its teeth there: a child that
+  // also tried to bind 3000 would exit 1 on EADDRINUSE and never print the
+  // startup line asserted just above.
+  const listeningBefore = await probeDefaultPort();
   const handle = await startServer({ PORT: String(port) });
 
   try {
@@ -435,6 +483,14 @@ test('T6 the startup line names the port the server bound', async () => {
       startupLine,
       STARTUP_PREFIX + port,
       'the startup line is literal and space-separated, with the bound port numeral last'
+    );
+    assert.strictEqual(handle.stderr.text, '', 'a successful start writes nothing to stderr');
+
+    const listeningAfter = await probeDefaultPort();
+
+    assert.ok(
+      !listeningAfter || listeningBefore,
+      'a server given a port must not also listen on the default port 3000'
     );
   } finally {
     await stopServer(handle.child);
@@ -469,43 +525,73 @@ test('T7 SIGINT logs the shutdown line and exits with status 0', async () => {
   }
 });
 
-test('T8 an unset PORT binds the default port 3000', async () => {
+test('T8 a PORT that is unset or empty binds the default port 3000', async () => {
   // Deliberately not allocateFreePort(): this gate is the default itself. It
   // fails legitimately when an unrelated process already holds port 3000, which
-  // is a host condition rather than a product defect.
-  const env = { ...process.env };
+  // is a host condition rather than a product defect. An empty string is the
+  // second spelling of "no value given", so both spellings are asserted, each
+  // child stopped before the next is spawned.
+  const withoutPort = { ...process.env };
 
-  delete env.PORT;
+  delete withoutPort.PORT;
 
-  const handle = await startServer(env);
+  const noValueCases = [
+    { spelling: 'an unset PORT', env: withoutPort },
+    { spelling: 'an empty PORT', env: { ...process.env, PORT: '' } },
+  ];
 
-  try {
-    const startupLine = await waitForLine(handle, 'stdout', STARTUP_PREFIX + DEFAULT_PORT, OUTPUT_TIMEOUT_MS);
+  for (const noValueCase of noValueCases) {
+    const handle = await startServer(noValueCase.env);
 
-    assert.strictEqual(startupLine, STARTUP_PREFIX + DEFAULT_PORT, 'an unset PORT must default to 3000');
-  } finally {
-    await stopServer(handle.child);
+    try {
+      const startupLine = await waitForLine(handle, 'stdout', STARTUP_PREFIX + DEFAULT_PORT, OUTPUT_TIMEOUT_MS);
+
+      assert.strictEqual(
+        startupLine,
+        STARTUP_PREFIX + DEFAULT_PORT,
+        `${noValueCase.spelling} must default to 3000`
+      );
+      assert.strictEqual(handle.stderr.text, '', 'a successful start writes nothing to stderr');
+    } finally {
+      await stopServer(handle.child);
+    }
   }
 });
 
 test('T9 an invalid PORT reports the accepted range on stderr and exits with status 1', async () => {
-  // A non-digit string, a decimal, an out-of-range high value, an out-of-range
-  // zero and a privileged port: each must be refused by the same range check.
-  const invalidValues = ['abc', '3000.5', '65536', '0', '80'];
+  // Every spelling the configuration contract rejects: the non-digit strings a
+  // bare parseInt would accept or misread, then the out-of-range and privileged
+  // values, each refused by the same digit-string and range check.
+  const invalidValues = [
+    'abc', '3000.5', ' 3000', '+3000', '0xbb8', '3e3', '3000abc', '65536', '0', '80',
+  ];
 
   for (const invalidValue of invalidValues) {
-    await assert.rejects(
-      startServer({ PORT: invalidValue }),
-      (failure) => {
-        assert.strictEqual(failure.exitCode, 1, `PORT=${invalidValue} must exit with status 1`);
-        assert.ok(
-          failure.stderr.includes(INVALID_PORT_PREFIX + invalidValue + INVALID_PORT_SUFFIX),
-          `PORT=${invalidValue} must name the value and the accepted range, got: ${failure.stderr.trim()}`
-        );
-        assert.ok(!failure.stdout.includes(STARTUP_PREFIX), `PORT=${invalidValue} must not report a bound port`);
-        return true;
-      }
+    // The outcome is captured rather than asserted with assert.rejects, so a
+    // start that wrongly succeeds still hands back a handle: the assertion below
+    // then fails the test and the finally stops the child, instead of a live
+    // process keeping the runner's pipes open and hanging the run.
+    const attempt = await startServer({ PORT: invalidValue }).then(
+      (handle) => ({ handle }),
+      (failure) => ({ failure })
     );
+
+    try {
+      assert.ok(
+        attempt.failure !== undefined,
+        `PORT=${invalidValue} must be refused, but the server started`
+      );
+      assert.strictEqual(attempt.failure.exitCode, 1, `PORT=${invalidValue} must exit with status 1`);
+      assert.ok(
+        attempt.failure.stderr.includes(INVALID_PORT_PREFIX + invalidValue + INVALID_PORT_SUFFIX),
+        `PORT=${invalidValue} must name the value and the accepted range, got: ${attempt.failure.stderr.trim()}`
+      );
+      assert.ok(!attempt.failure.stdout.includes(STARTUP_PREFIX), `PORT=${invalidValue} must not report a bound port`);
+    } finally {
+      if (attempt.handle !== undefined) {
+        await stopServer(attempt.handle.child);
+      }
+    }
   }
 });
 
@@ -521,19 +607,25 @@ test('T10 an occupied port reports the address in use and exits with status 1', 
 
   const heldPort = holder.address().port;
 
+  // Captured as in T9: a start that wrongly succeeds must fail this test and
+  // still be torn down, so no live child outlives the run.
+  const attempt = await startServer({ PORT: String(heldPort) }).then(
+    (handle) => ({ handle }),
+    (failure) => ({ failure })
+  );
+
   try {
-    await assert.rejects(
-      startServer({ PORT: String(heldPort) }),
-      (failure) => {
-        assert.strictEqual(failure.exitCode, 1, 'a bind failure must exit with status 1');
-        assert.ok(
-          failure.stderr.includes(ADDRESS_IN_USE_PREFIX + heldPort + ADDRESS_IN_USE_SUFFIX),
-          `the failure must name port ${heldPort} and what to do about it, got: ${failure.stderr.trim()}`
-        );
-        return true;
-      }
+    assert.ok(attempt.failure !== undefined, 'a held port must make the bind fail, but the server started');
+    assert.strictEqual(attempt.failure.exitCode, 1, 'a bind failure must exit with status 1');
+    assert.ok(
+      attempt.failure.stderr.includes(ADDRESS_IN_USE_PREFIX + heldPort + ADDRESS_IN_USE_SUFFIX),
+      `the failure must name port ${heldPort} and what to do about it, got: ${attempt.failure.stderr.trim()}`
     );
   } finally {
+    if (attempt.handle !== undefined) {
+      await stopServer(attempt.handle.child);
+    }
+
     await new Promise((resolve) => {
       holder.close(resolve);
     });
