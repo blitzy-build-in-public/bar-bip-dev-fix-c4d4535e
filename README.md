@@ -52,8 +52,8 @@ npm start
 ```
 
 The server listens on port 3000 unless the `PORT` environment variable says otherwise (see
-**Configuration: the `PORT` environment variable** below), and prints one line as soon as
-the port is bound:
+**Configuration: the `PORT` environment variable** below), and prints one line to stdout as
+soon as the port is bound:
 
 ```text
 Server listening on port 3000
@@ -77,7 +77,7 @@ Hello world
 
 The body is exactly `Hello world` — 11 bytes, with no trailing newline.
 
-Every request also prints one line to the server's terminal. The line is written before the
+Every request also prints one line to stdout. The line is written before the
 request is routed, so unmatched requests are logged too:
 
 ```text
@@ -176,8 +176,8 @@ Server shutting down
 `Server listening on port 4000` is printed once the port is bound, naming the port the
 process is actually listening on. The two bracketed lines are the request log, one line per
 request; their timestamps are the current UTC time in ISO-8601 form and differ from request
-to request. `Server shutting down` is printed when `CTRL+C` is pressed, after which the
-process exits with status `0`.
+to request. `Server shutting down` is printed to stdout when `CTRL+C` is pressed, after
+which the process exits with status `0`.
 
 Every response this server can produce is shown above: `200` for `GET /hello`, `404` for
 every other request. The one other message a user sees is the configuration error for an
@@ -228,17 +228,18 @@ Press `CTRL+C` in the terminal that is running the server. It prints:
 Server shutting down
 ```
 
-then stops accepting new connections, closes the open ones and exits with status `0`. The
-same signal sent from another shell (for example `kill -INT <pid>`) behaves identically.
+then stops accepting new connections, lets in-flight requests finish, closes idle keep-alive
+connections and exits with status `0`. The same signal sent from another shell (for example
+`kill -INT <pid>`) behaves identically.
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---------|------------|
-| `Error: Port 4000 is already in use. Stop the process using it or set PORT to a free port.` | Another process holds that port. Stop it, or start this server on a free one: `PORT=4001 node server.js`. |
+| `Error: Port 4000 is already in use. Stop the process using it or set PORT to a free port.` (stderr, exit status `1`) | Another process holds that port. Stop it, or start this server on a free one: `PORT=4001 node server.js`. |
 | `Error: Invalid PORT value "abc". PORT must be an integer between 1024 and 65535.` | `PORT` is not a string of digits in the accepted range. Correct it — `PORT=5000 node server.js` — or unset it to use port 3000. |
-| `Error: Server could not start on port 4000: <code>. Confirm the port is within 1024-65535 and is not reserved by another process.` | The bind failed for a reason other than a busy port, and the message names the runtime's error code. Choose another port in `1024`–`65535`. |
-| `curl: (7) Failed to connect to localhost port 3000` | Nothing is listening there. Start the server and check the port in its startup line, or the port you passed in `PORT`. |
+| `Error: Server could not start on port 4000: <error code or message>. Confirm the port is within 1024-65535 and is not reserved by another process.` (stderr, exit status `1`) | The bind failed for a reason other than a busy port, and the message names the runtime's error code, or its message when no code is set. Choose another port in `1024`–`65535`. |
+| `curl: (7) Failed to connect to localhost port 3000 after 0 ms: Could not connect to server` | Nothing is listening there. Start the server and check the port in its startup line, or the port you passed in `PORT`. |
 
 ## Test harness
 
@@ -275,10 +276,16 @@ server, note its resident set size, send a batch of requests, and compare:
 
 ```bash
 PORT=4000 node server.js &
+sleep 1
+ps -o rss= -p $!
+for i in $(seq 1 500); do curl -s -o /dev/null http://localhost:4000/hello; done
 ps -o rss= -p $!
 for i in $(seq 1 1000); do curl -s -o /dev/null http://localhost:4000/hello; done
 ps -o rss= -p $!
 ```
+
+Repeat the second loop and the sample that follows it once for each further 1000
+requests, so the readings fall at 500, 1500, 2500 and 3500 requests.
 
 The figure is in kilobytes. It rises while the runtime warms up and then stays in a band
 instead of climbing with the request count: on a normal checkout it reads roughly 47 MB just
@@ -287,4 +294,5 @@ after startup, about 58 MB after the first 500 requests, and then 59 MB or so af
 trend. The runtime reclaims what each request allocates; growth that tracked the request
 count would mean per-request retention, which the handler does not do.
 
-Stop the background server with `kill %1`, or press `CTRL+C` in the shell that started it.
+Stop the background server with `kill %1`, or bring it to the foreground with `fg` and then
+press `CTRL+C`.
