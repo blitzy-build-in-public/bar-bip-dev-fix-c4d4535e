@@ -96,15 +96,15 @@ let isShuttingDown = false;
 // server.close() stops accepting new connections but leaves idle keep-alive
 // sockets open and its callback waits for every connection to finish, so a
 // browser tab left open would make CTRL+C appear to hang.
-function trackSockets(server) {
-  const sockets = new Set();
+function trackSockets(httpServer) {
+  const trackedSockets = new Set();
 
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.on('close', () => sockets.delete(socket));
+  httpServer.on('connection', (socket) => {
+    trackedSockets.add(socket);
+    socket.on('close', () => trackedSockets.delete(socket));
   });
 
-  return sockets;
+  return trackedSockets;
 }
 
 function onServerError(err, port) {
@@ -118,7 +118,10 @@ function onServerError(err, port) {
 }
 
 function shutdown() {
-  if (isShuttingDown) {
+  // Nothing is shut down unless the server reached the listening state: after a
+  // failed bind this would print a shutdown line for a server that never
+  // listened and would overwrite the failure's exit status 1 with 0.
+  if (isShuttingDown || !server.listening) {
     return;
   }
 
