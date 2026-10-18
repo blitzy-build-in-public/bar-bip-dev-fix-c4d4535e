@@ -69,7 +69,6 @@ function sendResponse(res, statusCode, body) {
   res.end(body);
 }
 
-
 function handleHello(req, res) {
   sendResponse(res, 200, HELLO_BODY);
 }

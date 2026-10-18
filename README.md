@@ -134,6 +134,12 @@ Because only `GET` is served, `HEAD /hello` is the `404` as well; a `HEAD` respo
 
 **Speed.** Measured on loopback — client and server on the same machine, with the connection setup included in each measurement — the `/hello` response arrives in under 10 milliseconds.
 
+**Shutdown.** One line when the server stops, after you press CTRL+C:
+
+```text
+Server shutting down on port 3000
+```
+
 ## Shutdown
 
 Stop the server with CTRL+C in the terminal where it is running. It logs one line:
@@ -152,7 +158,7 @@ One environment variable configures the server:
 
 | Variable | Default | Accepted values |
 | --- | --- | --- |
-| `PORT` | `3000` | A whole number from `1024` to `65535` |
+| `PORT` | `3000` | A whole number written as decimal digits, from `1024` to `65535` |
 
 `PORT` is read once, at startup, from the process environment, and it replaces the default port:
 
@@ -166,7 +172,7 @@ Server listening on port 4000
 
 The server then answers on port 4000, so the requests in [Testing](#testing) become `curl http://localhost:4000/hello`. With `npm start` the same override reads `PORT=4000 npm start`.
 
-**Invalid values.** A `PORT` that is not a whole number, or that falls outside 1024-65535, stops the server before it binds, reports the offending value on standard error, and exits with status `1`:
+**Invalid values.** A `PORT` that is not written as plain decimal digits, or that falls outside 1024-65535, stops the server before it binds, reports the offending value on standard error, and exits with status `1`:
 
 ```bash
 PORT=abc node server.js
@@ -193,3 +199,5 @@ Port 3000 is already in use. Set a different PORT and try again.
 ```
 
 The number in that message is the port that was attempted. Either set a different `PORT`, or stop the server that is already running, as described in [Shutdown](#shutdown).
+
+**Any other startup failure.** If the port cannot be bound for some other reason — the operating system refusing it, for example — that is reported the same way: one line on standard error naming the port that was attempted and the error code the system returned, then exit status `1`, with no stack trace. The server prints `Failed to start server on port 3000: EACCES` in that case.
